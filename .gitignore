@@ -1,0 +1,5 @@
+values.schema.json
+*.bak
+*.tmp
+.idea/
+.vscode/

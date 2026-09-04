@@ -19,7 +19,7 @@ $missingDeps = @()
 
 if (-not (Test-Dependency "yq")) { $missingDeps += "yq" }
 if (-not (Test-Dependency "jq")) { $missingDeps += "jq" }
-if (-not (Test-Dependency "python")) { $missingDeps += "python" }
+if (-not (Test-Dependency "python") -and -not (Test-Dependency "python3")) { $missingDeps += "python" }
 
 if ($missingDeps.Count -gt 0) {
     Write-Host "✗ Missing dependencies: $($missingDeps -join ', ')" -ForegroundColor Red
@@ -54,6 +54,12 @@ Write-Host ""
 # Check if values file exists
 if (-not (Test-Path $ValuesFile)) {
     Write-Host "✗ Error: File not found: $ValuesFile" -ForegroundColor Red
+    exit 1
+}
+
+# Fail before doing any work if the definitions file was given but is missing
+if ($DefinitionsFile -and -not (Test-Path $DefinitionsFile)) {
+    Write-Host "✗ Error: File not found: $DefinitionsFile" -ForegroundColor Red
     exit 1
 }
 
@@ -92,38 +98,44 @@ if ((Test-Path $schemaFile) -and -not $Force) {
     Write-Host "→ Force mode: Replacing existing file..." -ForegroundColor Cyan
 }
 
-# Generate basic schema from values.yaml
+# Generate the schema into a temporary file so a failing run never truncates
+# an existing values.schema.json. Output is written as UTF-8 explicitly:
+# Windows PowerShell's ">" defaults to UTF-16LE, which produces unusable JSON.
 Write-Host "Generating schema from $ValuesFile..." -ForegroundColor Cyan
-yq -o=json $ValuesFile |
-python -m genson |
-jq '. + {"$schema": "http://json-schema.org/draft-07/schema#"}' > $schemaFile
+$tempFile = [System.IO.Path]::GetTempFileName()
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "✗ Error generating schema" -ForegroundColor Red
-    exit 1
-}
+try {
+    $generated = yq -o=json $ValuesFile |
+        python -m genson |
+        jq '. + {"$schema": "http://json-schema.org/draft-07/schema#"}'
 
-# Add definitions if provided
-if ($DefinitionsFile) {
-    if (Test-Path $DefinitionsFile) {
-        # Read generated schema
-        $schema = Get-Content $schemaFile -Raw | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $generated) {
+        Write-Host "✗ Error generating schema" -ForegroundColor Red
+        exit 1
+    }
 
-        # Read definitions file
+    Set-Content -Path $tempFile -Value $generated -Encoding utf8
+
+    # Add definitions if provided
+    if ($DefinitionsFile) {
+        $schema = Get-Content $tempFile -Raw | ConvertFrom-Json
         $defsContent = Get-Content $DefinitionsFile -Raw | ConvertFrom-Json
 
-        # Add definitions
         if ($defsContent.definitions) {
             $schema | Add-Member -MemberType NoteProperty -Name "definitions" -Value $defsContent.definitions -Force
         }
 
-        # Save result with sufficient depth to avoid truncation
-        $schema | ConvertTo-Json -Depth 100 | Set-Content $schemaFile
-
-        Write-Host "✓ Schema generated with definitions from $DefinitionsFile" -ForegroundColor Green
-    } else {
-        Write-Host "✗ Error: File not found: $DefinitionsFile" -ForegroundColor Red
+        # Depth 100 avoids ConvertTo-Json truncating deeply nested values
+        $schema | ConvertTo-Json -Depth 100 | Set-Content -Path $tempFile -Encoding utf8
     }
-} else {
-    Write-Host "✓ Schema generated" -ForegroundColor Green
+
+    Move-Item -Path $tempFile -Destination $schemaFile -Force
+
+    if ($DefinitionsFile) {
+        Write-Host "✓ Schema generated in $schemaFile with definitions from $DefinitionsFile" -ForegroundColor Green
+    } else {
+        Write-Host "✓ Schema generated in $schemaFile" -ForegroundColor Green
+    }
+} finally {
+    if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
 }

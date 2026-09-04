@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Helm Schema Generator - Linux/macOS Installation Script
 # This script adds the helmschema alias to your shell profile
@@ -27,21 +27,26 @@ fi
 # Make script executable
 chmod +x "$SCRIPT_PATH"
 
-# Detect shell and profile file
-if [ -n "$ZSH_VERSION" ]; then
-    SHELL_NAME="zsh"
-    PROFILE_FILE="$HOME/.zshrc"
-elif [ -n "$BASH_VERSION" ]; then
-    SHELL_NAME="bash"
-    if [ -f "$HOME/.bashrc" ]; then
-        PROFILE_FILE="$HOME/.bashrc"
-    else
-        PROFILE_FILE="$HOME/.bash_profile"
-    fi
-else
-    SHELL_NAME="unknown"
-    PROFILE_FILE="$HOME/.profile"
-fi
+# Detect the login shell and its profile file.
+# $ZSH_VERSION/$BASH_VERSION describe the shell running *this* script (always
+# bash), not the user's shell, so the login shell is read from $SHELL instead.
+SHELL_NAME="$(basename "${SHELL:-}")"
+case "$SHELL_NAME" in
+    zsh)
+        PROFILE_FILE="${ZDOTDIR:-$HOME}/.zshrc"
+        ;;
+    bash)
+        if [ -f "$HOME/.bashrc" ]; then
+            PROFILE_FILE="$HOME/.bashrc"
+        else
+            PROFILE_FILE="$HOME/.bash_profile"
+        fi
+        ;;
+    *)
+        SHELL_NAME="${SHELL_NAME:-unknown}"
+        PROFILE_FILE="$HOME/.profile"
+        ;;
+esac
 
 echo -e "${CYAN}Detected shell: $SHELL_NAME${NC}"
 echo -e "${CYAN}Profile file: $PROFILE_FILE${NC}"
@@ -56,15 +61,19 @@ fi
 # Check if alias already exists
 if grep -q "function helmschema" "$PROFILE_FILE" 2>/dev/null || grep -q "alias helmschema" "$PROFILE_FILE" 2>/dev/null; then
     echo -e "${YELLOW}⚠ helmschema function/alias already exists in your profile${NC}"
-    read -p "Do you want to update it? (y/N): " choice
+    read -r -p "Do you want to update it? (y/N): " choice
     if [ "$choice" != "y" ] && [ "$choice" != "Y" ]; then
         echo -e "${YELLOW}Installation cancelled${NC}"
         exit 0
     fi
 
-    # Remove old function/alias
-    sed -i.bak '/# Helm Schema Generator/,/^}/d' "$PROFILE_FILE" 2>/dev/null || true
-    sed -i.bak '/alias helmschema/d' "$PROFILE_FILE" 2>/dev/null || true
+    # Remove the old function/alias, keeping a single timestamped backup
+    BACKUP_FILE="${PROFILE_FILE}.helmschema.$(date +%Y%m%d_%H%M%S).bak"
+    cp "$PROFILE_FILE" "$BACKUP_FILE"
+    echo -e "${CYAN}Backup of your profile: $BACKUP_FILE${NC}"
+    sed -i.tmp '/# Helm Schema Generator/,/^}/d' "$PROFILE_FILE" 2>/dev/null || true
+    sed -i.tmp '/alias helmschema/d' "$PROFILE_FILE" 2>/dev/null || true
+    rm -f "${PROFILE_FILE}.tmp"
 fi
 
 # Add function to profile
